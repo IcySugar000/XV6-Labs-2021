@@ -315,6 +315,9 @@ fork(void)
   np->state = RUNNABLE;
   release(&np->lock);
 
+  // copy trace data
+  np->trace = p->trace;
+
   return pid;
 }
 
@@ -653,4 +656,15 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// Returns the number of processes whose state is not UNUSED
+int
+pcount(void)
+{
+  int count = 0;
+  for(int i = 0; i < NPROC; ++i) {
+    if(proc[i].state != UNUSED) ++count;
+  }
+  return count;
 }
