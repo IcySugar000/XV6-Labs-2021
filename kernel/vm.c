@@ -432,3 +432,31 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+void rec_vmprint(pagetable_t pagetable, int num) {
+  // num为递归深度，页表仅3层，因此到第四层就直接返回
+  if (num == 4) return;
+  
+  // 递归打印
+  for(int i = 0; i < 512; ++i) {
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V)) {
+      uint64 child = PTE2PA(pte);
+
+      for(int j = 1; j <= num; ++j) {
+        printf("..");
+        if(j != num) printf(" ");
+      }
+      printf("%d: pte %p pa %p\n", i, pte, child);
+
+      rec_vmprint((pagetable_t)child, num+1);
+    }
+  }
+}
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  rec_vmprint(pagetable, 1);
+}
