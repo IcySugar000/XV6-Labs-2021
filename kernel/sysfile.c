@@ -484,3 +484,123 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int sz, prot, flag, fd, offset;
+  struct file* file;
+  uint64 error_code = 0xffffffffffffffff;
+  struct proc* p = myproc();
+
+  if(argaddr(0, &addr) < 0
+  || argint(1, &sz) < 0
+  || argint(2, &prot) < 0
+  || argint(3, &flag) < 0
+  || argfd(4, &fd, &file) < 0
+  || argint(5, &offset) < 0) return error_code;
+
+  if(!file->writable && (prot & PROT_WRITE) && flag == MAP_SHARED) return error_code; 
+
+  if(p->sz + sz > MAXVA) return error_code;
+
+  for(int i=0; i<MAX_VMA; ++i) {
+    if(p->vmas[i].valid) continue;
+    
+    p->vmas[i].valid = 1;
+    p->vmas[i].addr = p->sz;
+    p->vmas[i].sz = sz;
+    p->vmas[i].flag = flag;
+    p->vmas[i].prot = prot;
+    p->vmas[i].file = file;
+    p->vmas[i].fd = fd;
+    p->vmas[i].offset = offset;
+
+    filedup(file);
+
+    p->sz += sz;
+    return p->vmas[i].addr;
+  }  
+
+  return error_code;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int sz;
+  struct proc *p = myproc();
+  if(argaddr(0, &addr) < 0 || argint(1, &sz) < 0) return -1;
+
+  int i;
+  for(i=0; i<MAX_VMA; ++i){
+    if(!p->vmas[i].valid || p->vmas[i].sz < sz) continue;
+
+    if(p->vmas[i].addr == addr){
+      p->vmas[i].addr += sz;
+      p->vmas[i].sz -= sz;
+      break;
+    }
+    if(addr + sz == p->vmas[i].addr + p->vmas[i].sz){
+      p->vmas[i].sz -= sz;
+      break;
+    }
+  }
+  if(i==MAX_VMA) return -1;
+
+  if(p->vmas[i].flag == MAP_SHARED && (p->vmas[i].prot & PROT_WRITE)){
+    filewrite(p->vmas[i].file, addr, sz);
+  }
+
+  uvmunmap(p->pagetable, addr, sz/PGSIZE, 1);
+
+  if(!p->vmas[i].sz){
+    fileclose(p->vmas[i].file);
+    p->vmas[i].valid = 0;
+  }
+
+  return 0;
+}
+
+int mmap_handler(int va, int cause) {
+  struct proc *p = myproc();
+
+  // 查找地址属于哪个VMA
+  int i;
+  for(i=0; i<MAX_VMA; ++i){
+    if(!p->vmas[i].valid) continue;
+    if(p->vmas[i].addr <= va && va <= p->vmas[i].addr + p->vmas[i].sz - 1) break;   
+  }
+  if(i == MAX_VMA) return -1;
+
+  int pte_flags = PTE_U;
+  if(p->vmas[i].prot & PROT_READ) pte_flags |= PTE_R;
+  if(p->vmas[i].prot & PROT_WRITE) pte_flags |= PTE_W;
+  if(p->vmas[i].prot & PROT_EXEC) pte_flags |= PTE_X;
+
+  struct file *f = p->vmas[i].file;
+  if(cause == 13 && f->readable == 0) return -1;
+  if(cause == 15 && f->writable == 0) return -1;
+
+  void* pa;
+  if(!(pa = kalloc())) return -1;
+  memset(pa, 0, PGSIZE);
+
+  ilock(f->ip);
+  int offset = p->vmas[i].offset + PGROUNDDOWN(va - p->vmas[i].addr);
+  int readbytes = readi(f->ip, 0, (uint64)pa, offset, PGSIZE);
+  iunlock(f->ip);
+  if(!readbytes){
+    kfree(pa);
+    return -1;
+  }
+
+  if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)pa, pte_flags)) {
+    kfree(pa);
+    return -1;
+  }
+
+  return 0;
+}
